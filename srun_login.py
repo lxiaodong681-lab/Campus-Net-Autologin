@@ -139,6 +139,7 @@ class SRUNLogin:
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:
+            time.sleep(0.3)
             self._log("❌", f"网络请求失败: {exc}")
             _LOGGER.exception("HTTP GET failed")
             return None
@@ -149,6 +150,7 @@ class SRUNLogin:
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:
+            time.sleep(0.3)
             self._log("❌", f"网络请求失败: {exc}")
             _LOGGER.exception("HTTP POST failed")
             return None
@@ -225,6 +227,7 @@ class SRUNLogin:
             self._log("❌", "无法确定本机 IP")
             return False
 
+        time.sleep(0.8)
         token = self.get_challenge()
         if not token:
             return False
@@ -256,6 +259,7 @@ class SRUNLogin:
             "n": "200",
             "type": "1",
         }
+        time.sleep(0.5)
         self._log("🚀", "发起登录请求")
         resp = self._post(f"http://{self.gateway}/cgi-bin/srun_portal", payload)
         if not resp:
