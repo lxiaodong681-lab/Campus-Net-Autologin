@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -83,7 +84,11 @@ def _parse_args() -> argparse.Namespace:
 
 def _setup_logging() -> None:
     logs_dir = Path(__file__).with_name("logs")
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logs_dir = Path(tempfile.gettempdir()) / "srun_login_logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = logs_dir / "error.log"
     logging.basicConfig(
         level=logging.INFO,

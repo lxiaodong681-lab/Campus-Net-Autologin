@@ -45,7 +45,7 @@ class SrunApp(customtkinter.CTk):
         self.status_text = customtkinter.StringVar(value="未连接")
         self.username_var = customtkinter.StringVar()
         self.password_var = customtkinter.StringVar()
-        self.gateway_var = customtkinter.StringVar(value="172.17.1.2")
+        self.gateway_var = customtkinter.StringVar(value="")
         self.ac_id_var = customtkinter.StringVar(value="1")
         self.auto_start_var = customtkinter.BooleanVar(value=False)
         self.auto_connect_var = customtkinter.BooleanVar(value=False)
@@ -73,7 +73,7 @@ class SrunApp(customtkinter.CTk):
         form_frame.pack(fill="x", padx=20, pady=5)
         self._form_row(form_frame, "账号：", self.username_var)
         self._form_row(form_frame, "密码：", self.password_var, show="*")
-        self._form_row(form_frame, "网关：", self.gateway_var)
+        self._form_row(form_frame, "网关：", self.gateway_var, placeholder="请输入学校网关地址")
         self._form_row(form_frame, "AC_ID：", self.ac_id_var)
 
         options_frame = customtkinter.CTkFrame(self)
@@ -98,11 +98,11 @@ class SrunApp(customtkinter.CTk):
         self.log_text.pack(fill="both", expand=True)
         self.log_text.configure(state="disabled")
 
-    def _form_row(self, parent, label: str, variable, show: Optional[str] = None) -> None:
+    def _form_row(self, parent, label: str, variable, show: Optional[str] = None, placeholder: str = "") -> None:
         row = customtkinter.CTkFrame(parent)
         row.pack(fill="x", pady=2)
         customtkinter.CTkLabel(row, text=label, width=80, anchor="w").pack(side="left")
-        entry = customtkinter.CTkEntry(row, textvariable=variable, show=show or "")
+        entry = customtkinter.CTkEntry(row, textvariable=variable, show=show or "", placeholder_text=placeholder)
         entry.pack(side="left", fill="x", expand=True)
 
     def _append_log(self, message: str) -> None:
@@ -117,7 +117,8 @@ class SrunApp(customtkinter.CTk):
         stored_username = self.config_manager.get_username() or data.get("username", "")
         self.username_var.set(stored_username)
         self.password_var.set(self.config_manager.get_password() or "")
-        self.gateway_var.set(data.get("gateway") or "172.17.1.2")
+        gateway_value = data.get("gateway") or "172.17.1.2"
+        self.gateway_var.set(gateway_value)
         self.ac_id_var.set(data.get("ac_id") or "1")
         self.auto_start_var.set(bool(data.get("auto_start")))
         self.auto_connect_var.set(bool(data.get("auto_connect_on_start")))
@@ -138,9 +139,10 @@ class SrunApp(customtkinter.CTk):
         dialog.focus_set()
 
         message = (
-            "注意：网关和 AC_ID 因每个学校的环境而异。"
-            "如果默认值无法连接，请参考学校官网或手动抓包获取。"
-            "当前默认预设为【江西师范大学】的配置信息。"
+            "警告：默认网关（172.17.1.2）为江西师范大学示例值，"
+            "其他学校用户请务必更改为本校实际网关地址！"
+            "网关和 AC_ID 因每个学校的环境而异，如果默认值无法连接，"
+            "请参考学校官网或使用抓包工具获取。"
         )
         content = customtkinter.CTkLabel(dialog, text=message, wraplength=380, justify="left")
         content.pack(padx=20, pady=20, fill="x")
