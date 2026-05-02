@@ -46,6 +46,15 @@ class ConfigManager:
             "start_minimized": False,
             "first_run": True,
             "suppress_startup_dialog": False,
+            "timed_mode": {
+                "enabled": False,
+                "start_time": "07:00",
+                "end_time": "23:59",
+                "check_interval_connected": 600,
+                "check_interval_disconnected": 120,
+                "check_interval_retry": 180,
+                "max_retries_per_session": 5,
+            },
         }
 
     def _safe_chmod(self) -> None:
@@ -65,18 +74,21 @@ class ConfigManager:
     def _keyring_get(self, key: str) -> Optional[str]:
         try:
             return keyring.get_password(self.service_name, key)
-        except Exception:
+        except Exception as exc:
             # 密钥链不可用时不降级为明文存储
-            print("⚠️ 无法访问密钥链，请检查系统密钥服务")
+            print(f"❌ 密钥链读取失败: {exc}")
+            print("提示：请确保系统密钥链服务已启动")
             _LOGGER.exception("Keyring get failed")
             return None
 
     def _keyring_set(self, key: str, value: str) -> None:
         try:
             keyring.set_password(self.service_name, key, value)
-        except Exception:
-            print("⚠️ 无法写入密钥链，请检查系统密钥服务")
+        except Exception as exc:
+            print(f"❌ 密钥链写入失败: {exc}")
+            print("提示：请确保系统密钥链服务已启动")
             _LOGGER.exception("Keyring set failed")
+            raise RuntimeError("keyring_write_failed") from exc
 
     def _keyring_delete(self, key: str) -> None:
         try:
