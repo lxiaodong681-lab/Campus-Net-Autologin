@@ -1,4 +1,4 @@
-﻿"""Auto-start configuration for Windows/macOS/Linux."""
+"""Auto-start configuration for Windows/macOS/Linux."""
 
 from __future__ import annotations
 
