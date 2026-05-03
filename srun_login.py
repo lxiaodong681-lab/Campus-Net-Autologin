@@ -1,4 +1,4 @@
-﻿"""Core Srun login client."""
+"""Core Srun login client."""
 
 from __future__ import annotations
 

@@ -1,10 +1,11 @@
-﻿"""GUI for campus network auto-login."""
+"""GUI for campus network auto-login."""
 
 from __future__ import annotations
 
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 import customtkinter
+import pystray
+from PIL import Image, ImageTk
 
 from auto_start import AutoStartManager
 from config_manager import ConfigManager
@@ -70,6 +73,13 @@ class AppOptions:
 
 class SrunApp(customtkinter.CTk):
     def __init__(self, config: ConfigManager, auto_start: AutoStartManager, options: AppOptions):
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("srun_login")
+            except Exception as exc:
+                print(f"⚠️ 无法设置任务栏标识: {exc}")
         super().__init__()
         self.config_manager = config
         self.auto_start_manager = auto_start
@@ -79,6 +89,27 @@ class SrunApp(customtkinter.CTk):
         self.minsize(400, 580)
         customtkinter.set_appearance_mode("System")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._tk_icon: Optional[ImageTk.PhotoImage] = None
+        self._taskbar_ico: Optional[Path] = None
+        try:
+            icon_path = Path(__file__).with_name("icon.png")
+            icon_image = Image.open(icon_path)
+            self._tk_icon = ImageTk.PhotoImage(icon_image)
+            self.iconphoto(True, self._tk_icon)
+            if sys.platform.startswith("win"):
+                temp_dir = Path(tempfile.gettempdir()) / "srun_login"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                ico_path = temp_dir / "icon.ico"
+                icon_image.save(
+                    ico_path,
+                    format="ICO",
+                    sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)],
+                )
+                self._taskbar_ico = ico_path
+                self.iconbitmap(default=str(ico_path))
+        except Exception as exc:
+            print(f"⚠️ 任务栏图标加载失败: {exc}")
 
         self.status_icon = customtkinter.StringVar(value="🔴")
         self.status_text = customtkinter.StringVar(value="未连接")
@@ -92,6 +123,7 @@ class SrunApp(customtkinter.CTk):
         self.timed_mode_var = customtkinter.BooleanVar(value=False)
         self.timed_start_var = customtkinter.StringVar(value="07:00")
         self.timed_end_var = customtkinter.StringVar(value="23:59")
+        self._tray: Optional[pystray.Icon] = None
 
         self._build_ui()
         self._load_config()
@@ -369,11 +401,12 @@ class SrunApp(customtkinter.CTk):
     def _set_status(self, icon: str, text: str) -> None:
         self.status_icon.set(icon)
         self.status_text.set(text)
+        self._update_tray_status(text)
 
     def _on_close(self) -> None:
         self.withdraw()
-        self._append_log("⚠️ 已最小化到后台")
-        return
+        self._append_log("⚠️ 已最小化到系统托盘，可通过托盘图标或 python main.py 重新打开")
+        self._setup_tray()
 
     def _quit_app(self) -> None:
         self._ipc_stop_event.set()
@@ -382,6 +415,16 @@ class SrunApp(customtkinter.CTk):
     def show_window(self) -> None:
         self.deiconify()
         self.lift()
+        if self._tray is not None:
+            self._tray.stop()
+            self._tray = None
+        try:
+            if self._taskbar_ico is not None:
+                self.iconbitmap(default=str(self._taskbar_ico))
+                if self._tk_icon is not None:
+                    self.iconphoto(True, self._tk_icon)
+        except Exception:
+            pass
 
     def _start_ipc_listener(self) -> None:
         port = _ipc_port(self.options.app_name)
@@ -474,6 +517,72 @@ class SrunApp(customtkinter.CTk):
         if success:
             self._set_status("🔴", "未连接")
             self._append_log("⚠️ " + ("已停止定时" if not is_disconnect else "已断开连接并停止所有任务"))
+
+    def _setup_tray(self) -> None:
+        if self._tray is not None:
+            return
+        try:
+            icon_path = Path(__file__).with_name("icon.png")
+            icon_image = Image.open(icon_path)
+        except Exception as exc:
+            self._append_log(f"⚠️ 托盘图标加载失败: {exc}")
+            return
+
+        def show_window(_icon=None, _item=None):
+            self.after(0, self.show_window)
+
+        def disconnect_now(_icon, _item):
+            from stop import disconnect_and_stop
+
+            disconnect_and_stop()
+            self.after(0, lambda: self._set_status("🔴", "未连接"))
+
+        def stop_timed_now(_icon, _item):
+            from stop import stop_timed_mode
+
+            success, message = stop_timed_mode()
+            if success:
+                self.after(0, lambda: self._set_status("🔴", "未连接"))
+                self.after(0, lambda: self._append_log("⚠️ 已停止定时"))
+            else:
+                self.after(0, lambda: self._append_log(f"⚠️ 停止定时失败: {message}"))
+
+        def quit_app(_icon, _item):
+            if self._tray is not None:
+                self._tray.stop()
+                self._tray = None
+            self._ipc_stop_event.set()
+            self.after(0, self.destroy)
+
+        menu = pystray.Menu(
+            pystray.MenuItem("显示主窗口", show_window, default=True),
+            pystray.MenuItem("立即连接", lambda _icon, _item: self.after(0, self._on_connect)),
+            pystray.MenuItem(
+                "停止/断开",
+                pystray.Menu(
+                    pystray.MenuItem("停止定时", stop_timed_now),
+                    pystray.MenuItem("断开连接", disconnect_now),
+                ),
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("退出", quit_app),
+        )
+
+        self._tray = pystray.Icon(
+            "srun_login",
+            icon_image,
+            f"校园网自动登录 - {self.status_text.get()}",
+            menu,
+        )
+        try:
+            self._tray.run_detached()
+        except Exception as exc:
+            self._append_log(f"⚠️ 托盘启动失败: {exc}")
+            self._tray = None
+
+    def _update_tray_status(self, status_text: str) -> None:
+        if self._tray is not None:
+            self._tray.title = f"校园网自动登录 - {status_text}"
 
 
 def run_app(options: Optional[AppOptions] = None) -> None:

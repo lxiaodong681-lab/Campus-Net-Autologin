@@ -1,4 +1,4 @@
-﻿"""Timed login manager for long-running devices."""
+"""Timed login manager for long-running devices."""
 
 from __future__ import annotations
 

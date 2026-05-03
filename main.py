@@ -1,4 +1,4 @@
-﻿"""Main entry for the campus network auto-login tool."""
+"""Main entry for the campus network auto-login tool."""
 
 from __future__ import annotations
 
