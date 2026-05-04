@@ -133,7 +133,10 @@ class ConfigManager:
 
     def _get_alt_keyring(self):
         try:
-            from keyrings.alt.file import EncryptedKeyring
+            import importlib
+
+            module = importlib.import_module("keyrings.alt.file")
+            EncryptedKeyring = getattr(module, "EncryptedKeyring")
         except Exception:
             return None
         try:
