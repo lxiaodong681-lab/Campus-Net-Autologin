@@ -7,13 +7,20 @@ import hmac
 import json
 import logging
 import re
+import socket
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
+from errors import ErrorCode
+
 _BASE64_CHARS = "LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA"
 _LOGGER = logging.getLogger(__name__)
+
+_REQUEST_DELAY = 0.5       # seconds between HTTP requests to avoid rate-limiting
+_RETRY_DELAY = 0.3         # seconds after a failed HTTP call
+_CHALLENGE_DELAY = 0.8     # seconds between IP detection and challenge fetch
 
 
 def _str_to_uints(data: str, include_length: bool) -> list[int]:
@@ -112,23 +119,56 @@ def get_sha1(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()
 
 
+# ── Error-code mapping from Srun server responses ───────────────────────
+
+_SRUN_ERROR_MAP: dict[str, ErrorCode] = {
+    "E3001": ErrorCode.WRONG_CREDENTIALS,
+    "E3002": ErrorCode.ACCOUNT_NOT_EXIST,
+    "E3006": ErrorCode.NETWORK_ANOMALY,
+    "E2531": ErrorCode.IP_ALREADY_ONLINE,
+    "E2553": ErrorCode.ACCOUNT_DISABLED,
+    "E2616": ErrorCode.ALREADY_ONLINE,
+    "E2620": ErrorCode.AUTH_TIMEOUT,
+}
+
+
 class SRUNLogin:
-    def __init__(self, username: str, password: str, gateway: str, ac_id: str, ip: str = None):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        gateway: str,
+        ac_id: str,
+        ip: str | None = None,
+        log_callback: Optional[Callable[[str, str], None]] = None,
+    ):
         self.username = username
         self.password = password
         self.gateway = gateway
         self.ac_id = ac_id
         self.ip = ip
         self.session = requests.Session()
-        # 统一设置超时，避免 GUI 卡住
         self.timeout = 5
+        self.last_error: Optional[ErrorCode] = None
+        self._log_cb = log_callback
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
 
     def _log(self, prefix: str, message: str) -> None:
-        print(f"{prefix} {message}")
+        if self._log_cb is not None:
+            self._log_cb(prefix, message)
+        else:
+            print(f"{prefix} {message}")
         if prefix in {"❌", "⚠️"}:
             _LOGGER.warning(message)
         else:
             _LOGGER.info(message)
+
+    # ------------------------------------------------------------------
+    # HTTP helpers
+    # ------------------------------------------------------------------
 
     def _callback(self, ts: int) -> str:
         return f"jQuery{ts}_{ts}"
@@ -138,8 +178,18 @@ class SRUNLogin:
             resp = self.session.get(url, params=params, timeout=self.timeout)
             resp.raise_for_status()
             return resp.text
+        except requests.Timeout:
+            self._log("❌", "网络请求超时，请检查校园网是否可达")
+            self.last_error = ErrorCode.NETWORK_TIMEOUT
+            _LOGGER.exception("HTTP GET timeout")
+            return None
+        except requests.ConnectionError:
+            self._log("❌", f"无法连接到 {self.gateway}，请检查网络")
+            self.last_error = ErrorCode.GATEWAY_UNREACHABLE
+            _LOGGER.exception("HTTP GET connection error")
+            return None
         except requests.RequestException as exc:
-            time.sleep(0.3)
+            time.sleep(_RETRY_DELAY)
             self._log("❌", f"网络请求失败: {exc}")
             _LOGGER.exception("HTTP GET failed")
             return None
@@ -149,13 +199,45 @@ class SRUNLogin:
             resp = self.session.post(url, data=data, timeout=self.timeout)
             resp.raise_for_status()
             return resp.text
+        except requests.Timeout:
+            self._log("❌", "网络请求超时，请检查校园网是否可达")
+            self.last_error = ErrorCode.NETWORK_TIMEOUT
+            _LOGGER.exception("HTTP POST timeout")
+            return None
+        except requests.ConnectionError:
+            self._log("❌", f"无法连接到 {self.gateway}，请检查网络")
+            self.last_error = ErrorCode.GATEWAY_UNREACHABLE
+            _LOGGER.exception("HTTP POST connection error")
+            return None
         except requests.RequestException as exc:
-            time.sleep(0.3)
+            time.sleep(_RETRY_DELAY)
             self._log("❌", f"网络请求失败: {exc}")
             _LOGGER.exception("HTTP POST failed")
             return None
 
+    # ------------------------------------------------------------------
+    # Gateway reachability
+    # ------------------------------------------------------------------
+
+    def _check_gateway_reachable(self) -> bool:
+        """Quick TCP-connect to gateway:80 to verify basic reachability."""
+        try:
+            with socket.create_connection((self.gateway, 80), timeout=3.0):
+                pass
+            return True
+        except OSError:
+            self._log("❌", f"网关 {self.gateway} 不可达，请检查网络连接")
+            self.last_error = ErrorCode.GATEWAY_UNREACHABLE
+            return False
+
+    # ------------------------------------------------------------------
+    # JSON helpers
+    # ------------------------------------------------------------------
+
     def _extract_json(self, text: str) -> Optional[dict]:
+        if not isinstance(text, str):
+            _LOGGER.warning("_extract_json called with non-string: %s", type(text))
+            return None
         match = re.search(r"\((\{.*\})\)", text, re.S)
         payload = match.group(1) if match else text
         try:
@@ -163,6 +245,10 @@ class SRUNLogin:
         except json.JSONDecodeError:
             _LOGGER.exception("Failed to parse JSON response")
             return None
+
+    # ------------------------------------------------------------------
+    # Login flow
+    # ------------------------------------------------------------------
 
     def _get_login_page_ip(self) -> Optional[str]:
         url = f"http://{self.gateway}/srun_portal_pc"
@@ -198,9 +284,12 @@ class SRUNLogin:
             self._log("✨", "成功获取 challenge token")
             return token
         self._log("❌", f"获取 challenge 失败: {resp}")
+        self.last_error = ErrorCode.CHALLENGE_FAILED
         return None
 
     def _encode_info(self, token: str, ip: str) -> str:
+        # The plain-text password is temporarily in memory here --
+        # it is encrypted before being sent over the wire.
         info_dict = {
             "username": self.username,
             "password": self.password,
@@ -213,21 +302,36 @@ class SRUNLogin:
         return "{SRBX1}" + get_base64(encrypted)
 
     def _is_login_success(self, text: str) -> bool:
+        """Check the response for a definitive success indicator.
+
+        Matches ``login_ok``, ``"error":"ok"``, or the JSON field
+        ``error == "ok"``.  The previous ``"suc" in text`` heuristic
+        has been removed because it produced false positives
+        (e.g. matching the word "success" in unrelated content).
+        """
         if "login_ok" in text or '"error":"ok"' in text:
             return True
-        if "suc" in text and "error" not in text:
+        data = self._extract_json(text)
+        if data and data.get("error") == "ok":
             return True
         return False
 
     def login(self) -> bool:
+        self.last_error = None
+
+        # --- pre-flight: gateway reachable? ---
+        if not self._check_gateway_reachable():
+            return False
+
         ip_from_page = self._get_login_page_ip()
         if ip_from_page:
             self.ip = ip_from_page
         if not self.ip:
             self._log("❌", "无法确定本机 IP")
+            self.last_error = self.last_error or ErrorCode.NETWORK_ANOMALY
             return False
 
-        time.sleep(0.8)
+        time.sleep(_CHALLENGE_DELAY)
         token = self.get_challenge()
         if not token:
             return False
@@ -259,7 +363,7 @@ class SRUNLogin:
             "n": "200",
             "type": "1",
         }
-        time.sleep(0.5)
+        time.sleep(_REQUEST_DELAY)
         self._log("🚀", "发起登录请求")
         resp = self._post(f"http://{self.gateway}/cgi-bin/srun_portal", payload)
         if not resp:
@@ -267,10 +371,13 @@ class SRUNLogin:
         if self._is_login_success(resp):
             self._log("🎉", "登录成功")
             return True
+
         self._log("❌", self.get_error_message(resp))
         return False
 
     def logout(self) -> bool:
+        self.last_error = None
+
         ts = int(time.time() * 1000)
         payload = {
             "callback": self._callback(ts),
@@ -291,6 +398,8 @@ class SRUNLogin:
         return False
 
     def check_status(self) -> bool:
+        self.last_error = None
+
         ts = int(time.time() * 1000)
         params = {"callback": self._callback(ts), "_": ts}
         resp = self._get(f"http://{self.gateway}/cgi-bin/rad_user_info", params)
@@ -300,6 +409,13 @@ class SRUNLogin:
             return False
         return True
 
+    # ------------------------------------------------------------------
+    # Error interpretation
+    # ------------------------------------------------------------------
+
+    def get_last_error(self) -> Optional[ErrorCode]:
+        return self.last_error
+
     def get_error_message(self, resp_text: str) -> str:
         data = self._extract_json(resp_text)
         error = None
@@ -308,20 +424,18 @@ class SRUNLogin:
             error = data.get("error") or data.get("res")
             error_msg = data.get("error_msg")
 
-        mapping = {
-            "ok": "登录成功",
-            "E3001": "账号或密码错误",
-            "E3002": "账号不存在",
-            "E3006": "网络异常，请稍后再试",
-            "E2531": "IP 已在线，请先下线",
-            "E2553": "账号被禁用",
-            "E2616": "账号已在线",
-            "E2620": "认证超时",
-        }
-        if error in mapping:
-            return mapping[error]
+        if error is not None and error in _SRUN_ERROR_MAP:
+            self.last_error = _SRUN_ERROR_MAP[error]
+            ec = self.last_error
+            return ec.full_message() if ec else f"登录失败: {error}"
+
         if "already" in resp_text or "在线" in resp_text:
-            return "账号已在线"
+            self.last_error = ErrorCode.ALREADY_ONLINE
+            return ErrorCode.ALREADY_ONLINE.format()
+
         if error_msg:
+            self.last_error = ErrorCode.LOGIN_RESPONSE_UNKNOWN
             return f"登录失败: {error_msg}"
+
+        self.last_error = ErrorCode.LOGIN_RESPONSE_UNKNOWN
         return f"登录失败: {error or resp_text.strip()}"

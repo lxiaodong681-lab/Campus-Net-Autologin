@@ -4,73 +4,19 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-import socket
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
 
-from environment import get_platform, has_display, is_linux_cli
 from config_manager import ConfigManager
+from environment import get_platform, has_display, is_linux_cli
+from errors import ErrorCode
+from shared import (
+    SingleInstanceLock,
+    ipc_port,
+    send_ipc,
+)
 from srun_login import SRUNLogin
-
-
-def _ipc_port(app_name: str) -> int:
-    import hashlib
-
-    digest = hashlib.md5(app_name.encode("utf-8")).hexdigest()
-    return 38000 + (int(digest[:6], 16) % 1000)
-
-
-class SingleInstanceLock:
-    def __init__(self, lock_path: Path):
-        self.lock_path = lock_path
-        self.handle: Optional[object] = None
-
-    def acquire(self) -> bool:
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = open(self.lock_path, "a+")
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError:
-            return False
-
-    def release(self) -> None:
-        if not self.handle:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self.handle, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        try:
-            self.handle.close()
-        except OSError:
-            pass
-
-
-def send_ipc(app_name: str, message: str) -> None:
-    port = _ipc_port(app_name)
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1.0) as sock:
-            sock.sendall(message.encode("utf-8"))
-    except OSError:
-        pass
 
 
 def _parse_args() -> argparse.Namespace:
@@ -82,25 +28,36 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--configure", action="store_true", help="强制显示配置界面")
     parser.add_argument("--quit", action="store_true", help="退出已运行实例")
     parser.add_argument("--stop", action="store_true", help="停止正在运行的定时模式")
+    parser.add_argument("--skip-preflight", action="store_true", help="跳过网络环境预检")
     return parser.parse_args()
 
 
-def _run_cli_login(config_manager: ConfigManager) -> bool:
-    data = config_manager.load_config()
-    username = config_manager.get_username() or data.get("username", "")
-    password = config_manager.get_password() or ""
-    gateway = data.get("gateway", "")
-    ac_id = data.get("ac_id", "1")
-    default_ip = data.get("default_ip") or None
-
-    if not username or not password or not gateway:
-        print("❌ 缺少账号、密码或网关配置，无法登录")
+def _run_cli_login(config_manager: ConfigManager, skip_preflight: bool = False) -> bool:
+    creds = config_manager.get_login_credentials()
+    if creds is None:
+        print(ErrorCode.CREDENTIAL_NOT_FOUND.format())
         print("提示：请先通过图形界面配置，或手动编辑配置文件")
         return False
 
-    login = SRUNLogin(username, password, gateway, ac_id, ip=default_ip)
+    if not skip_preflight:
+        from network_checker import run_preflight_checks
+
+        errors = run_preflight_checks(creds.gateway)
+        for err in errors:
+            print(f"❌ {err.full_message()}")
+
+    login = SRUNLogin(
+        creds.username, creds.password, creds.gateway, creds.ac_id, ip=creds.default_ip,
+    )
     success = login.login()
-    print("🎉 登录成功！" if success else "❌ 登录失败")
+    if success:
+        print("🎉 登录成功！")
+    else:
+        err = login.get_last_error()
+        if err:
+            print(f"❌ {err.full_message()}")
+        else:
+            print("❌ 登录失败")
     return success
 
 
@@ -158,6 +115,7 @@ def main() -> None:
             send_ipc(config_manager.app_name, "show")
         return
     try:
+        # ── Timed mode ────────────────────────────────────────────
         if args.timed:
             from timed_mode import TimedLoginManager
 
@@ -165,26 +123,33 @@ def main() -> None:
             manager.run_loop()
             return
 
+        # ── CLI / background ──────────────────────────────────────
         if args.background or args.cli:
             from cli_wizard import run_interactive_setup
 
             run_interactive_setup()
             return
 
+        # ── Headless fallback ─────────────────────────────────────
         if not has_display():
             if args.configure:
                 print("❌ 无法使用图形界面，请在有显示器的环境中配置")
-                return
+                sys.exit(1)
             from cli_wizard import run_interactive_setup
 
             run_interactive_setup()
             return
 
+        # ── GUI ───────────────────────────────────────────────────
         from gui import AppOptions
 
         data = config_manager.load_config()
         if args.configure:
-            options = AppOptions(start_minimized=False, auto_connect_on_start=False, app_name=config_manager.app_name)
+            options = AppOptions(
+                start_minimized=False,
+                auto_connect_on_start=False,
+                app_name=config_manager.app_name,
+            )
         else:
             options = AppOptions(
                 start_minimized=args.minimized or data.get("start_minimized", False),
