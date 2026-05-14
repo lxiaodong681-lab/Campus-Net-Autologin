@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import sys
@@ -14,7 +15,12 @@ from typing import Optional
 import requests
 
 from config_manager import ConfigManager
+from errors import ErrorCode
 from srun_login import SRUNLogin
+
+_LOGGER = logging.getLogger(__name__)
+
+_INACTIVE_CHECK_INTERVAL = 60   # seconds between wake-ups during inactive hours
 
 
 class TimedLoginManager:
@@ -30,7 +36,7 @@ class TimedLoginManager:
         signal.signal(signal.SIGTERM, self._handle_exit)
 
     def _handle_exit(self, signum, frame) -> None:
-        print("[信息] 收到停止信号，正在退出...")
+        _LOGGER.info("收到停止信号，正在退出...")
         if self.pid_file.exists():
             try:
                 self.pid_file.unlink()
@@ -54,22 +60,38 @@ class TimedLoginManager:
             resp = requests.get("http://www.baidu.com", timeout=5)
             return resp.status_code < 400
         except requests.RequestException:
+            _LOGGER.debug("Baidu connectivity check failed (request error)")
+            return False
+        except OSError:
+            _LOGGER.debug("Baidu connectivity check failed (OS/DNS error)")
             return False
 
     def _ensure_login(self) -> bool:
-        data = self.config_manager.load_config()
-        username = self.config_manager.get_username() or data.get("username", "")
-        password = self.config_manager.get_password() or ""
-        gateway = data.get("gateway", "")
-        ac_id = data.get("ac_id", "1")
-        default_ip = data.get("default_ip") or None
-        if not username or not password or not gateway:
-            print("❌ 缺少账号、密码或网关配置，无法登录")
-            print("提示：请先通过图形界面配置，或手动编辑配置文件")
+        creds = self.config_manager.get_login_credentials()
+        if creds is None:
+            _LOGGER.error(ErrorCode.CREDENTIAL_NOT_FOUND.full_message())
             return False
+
         if self.srun is None:
-            self.srun = SRUNLogin(username, password, gateway, ac_id, ip=default_ip)
-        return self.srun.login()
+            self.srun = SRUNLogin(
+                creds.username, creds.password, creds.gateway, creds.ac_id, ip=creds.default_ip,
+            )
+        else:
+            # Refresh credentials in case they were updated
+            self.srun.username = creds.username
+            self.srun.password = creds.password
+            self.srun.gateway = creds.gateway
+            self.srun.ac_id = creds.ac_id
+            self.srun.ip = creds.default_ip
+
+        success = self.srun.login()
+        if not success:
+            err = self.srun.get_last_error()
+            if err:
+                _LOGGER.warning(err.full_message())
+            else:
+                _LOGGER.warning("登录失败（未知原因）")
+        return success
 
     def _get_interval(self, connected: bool, success: bool) -> int:
         if connected:
@@ -82,29 +104,41 @@ class TimedLoginManager:
         retry_count = 0
         max_retries = int(self.timed_config.get("max_retries_per_session", 5))
         self.pid_file.write_text(str(os.getpid()))
+        _LOGGER.info("定时模式主循环已启动 (PID=%s)", os.getpid())
+
         while True:
             if not self._is_in_active_hours():
-                time.sleep(3600)
+                # Sleep in short increments so SIGTERM is handled promptly
+                for _ in range(60):  # 60 * 60s = 1 hour
+                    time.sleep(_INACTIVE_CHECK_INTERVAL)
+                    if self._is_in_active_hours():
+                        break
                 retry_count = 0
                 continue
+
             connected = self._is_network_connected()
             if connected:
                 retry_count = 0
                 interval = self._get_interval(connected=True, success=True)
-                print(f"[定时模式] 网络畅通，下次检查 {interval} 秒后")
+                _LOGGER.info("网络畅通，下次检查 %s 秒后", interval)
                 time.sleep(interval)
                 continue
+
+            _LOGGER.info("网络未连接，尝试登录...")
             success = self._ensure_login()
             if success:
                 retry_count = 0
                 interval = self._get_interval(connected=False, success=True)
-                print(f"[定时模式] 登录成功，下次检查 {interval} 秒后")
+                _LOGGER.info("登录成功，下次检查 %s 秒后", interval)
             else:
                 retry_count += 1
                 interval = int(self.timed_config.get("check_interval_retry", 180))
                 if retry_count >= max_retries:
-                    print(f"[定时模式] 登录失败次数过多，{interval} 秒后再检查")
+                    _LOGGER.warning(
+                        "登录失败次数过多 (%s/%s)，%s 秒后再检查",
+                        retry_count, max_retries, interval,
+                    )
                     retry_count = 0
                 else:
-                    print(f"[定时模式] 登录失败，{interval} 秒后重试")
+                    _LOGGER.warning("登录失败 (%s/%s)，%s 秒后重试", retry_count, max_retries, interval)
             time.sleep(interval)

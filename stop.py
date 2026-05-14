@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import sys
 import tempfile
 from pathlib import Path
+
+from config_manager import ConfigManager
+from srun_login import SRUNLogin
+
+_LOGGER = logging.getLogger(__name__)
 
 PID_FILE = Path(tempfile.gettempdir()) / "srun_login_timed.pid"
 
@@ -29,6 +35,11 @@ def stop_timed_mode() -> tuple[bool, str]:
         os.kill(pid, signal.SIGTERM)
         PID_FILE.unlink()
         return True, f"已成功停止定时模式（PID: {pid}）"
+    except ValueError:
+        _LOGGER.warning("PID 文件内容损坏，已自动清理")
+        if PID_FILE.exists():
+            PID_FILE.unlink()
+        return False, "PID 文件内容已损坏，已自动清理（定时任务可能已退出）"
     except ProcessLookupError:
         if PID_FILE.exists():
             PID_FILE.unlink()
@@ -46,23 +57,16 @@ def disconnect_and_stop() -> tuple[bool, str]:
         timed_success, _ = stop_timed_mode()
         timed_stopped = timed_success
 
-    from config_manager import ConfigManager
-    from srun_login import SRUNLogin
-
     config_manager = ConfigManager()
-    config = config_manager.load_config()
-    username = config_manager.get_username() or config.get("username", "")
-    password = config_manager.get_password() or ""
-    gateway = config.get("gateway", "")
-    ac_id = config.get("ac_id", "1")
+    creds = config_manager.get_login_credentials()
 
-    if not username or not gateway:
+    if creds is None:
         if timed_stopped:
             return True, "已停止定时模式（但未找到登录信息，无法执行断开）"
         return False, "未找到登录信息，请先配置账号"
 
     try:
-        login = SRUNLogin(username, password, gateway, ac_id)
+        login = SRUNLogin(creds.username, creds.password, creds.gateway, creds.ac_id)
         logout_success = login.logout()
         if logout_success:
             return True, "已断开校园网连接并停止所有任务"
@@ -73,7 +77,8 @@ def disconnect_and_stop() -> tuple[bool, str]:
         return False, f"操作失败：{exc}"
 
 
-def _interactive_menu() -> None:
+def _interactive_menu() -> tuple[bool, str]:
+    """Present an interactive menu; returns (success, message)."""
     print(BANNER)
     print("\n请选择操作：")
     print("  1. 停止定时任务（保持登录状态）")
@@ -85,14 +90,14 @@ def _interactive_menu() -> None:
         if choice in ("1", "１"):
             success, message = stop_timed_mode()
             print("✅ " + message if success else "❌ " + message)
-            sys.exit(0 if success else 1)
+            return success, message
         if choice in ("2", "２"):
             success, message = disconnect_and_stop()
             print("✅ " + message if success else "❌ " + message)
-            sys.exit(0 if success else 1)
+            return success, message
         if choice in ("3", "３"):
             print("已取消操作")
-            sys.exit(0)
+            return True, "已取消操作"
         print("  无效选项，请重新输入 1、2 或 3")
 
 
@@ -108,12 +113,10 @@ if __name__ == "__main__":
     if args.disconnect:
         success, message = disconnect_and_stop()
     else:
-        _interactive_menu()
-        success, message = True, "已取消操作"
+        success, message = _interactive_menu()
 
     if success:
         print(f"✅ {message}")
         sys.exit(0)
     print(f"❌ {message}")
     sys.exit(1)
-

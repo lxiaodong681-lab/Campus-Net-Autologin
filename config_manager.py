@@ -12,12 +12,24 @@ import platform
 import re
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import keyring
 from cryptography.fernet import Fernet
 
+from errors import ErrorCode
+
 _LOGGER = logging.getLogger(__name__)
+
+_PBKDF2_ITERATIONS = 100_000
+
+
+class LoginCredentials(NamedTuple):
+    username: str
+    password: str
+    gateway: str
+    ac_id: str
+    default_ip: Optional[str]
 
 
 class ConfigManager:
@@ -29,6 +41,8 @@ class ConfigManager:
         self.fernet_seed_path = self.config_dir / ".credentials.seed"
         self.service_name = app_name
         self._ensure_dir()
+        self._warned_missing_username = False
+        self._warned_missing_password = False
 
     def _get_config_dir(self) -> Path:
         system = platform.system().lower()
@@ -78,6 +92,10 @@ class ConfigManager:
         if gateway and not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", gateway):
             raise ValueError("网关地址格式不正确")
 
+    # ------------------------------------------------------------------
+    # Fernet encryption (PBKDF2-strengthened key derivation)
+    # ------------------------------------------------------------------
+
     def _get_machine_id(self) -> str:
         parts = [
             platform.node(),
@@ -100,9 +118,13 @@ class ConfigManager:
     def _get_fernet(self) -> Fernet:
         seed = self._ensure_fernet_seed()
         machine_id = self._get_machine_id().encode("utf-8")
-        digest = hashlib.sha256(seed + machine_id).digest()
-        key = base64.urlsafe_b64encode(digest)
+        derived = hashlib.pbkdf2_hmac("sha256", seed, machine_id, _PBKDF2_ITERATIONS)
+        key = base64.urlsafe_b64encode(derived)
         return Fernet(key)
+
+    # ------------------------------------------------------------------
+    # Encrypted credential file (last-resort fallback)
+    # ------------------------------------------------------------------
 
     def _read_encrypted_credentials(self) -> Optional[dict]:
         if not self.credentials_path.exists():
@@ -115,9 +137,9 @@ class ConfigManager:
             fernet = self._get_fernet()
             decrypted = fernet.decrypt(token.encode("utf-8"))
             return json.loads(decrypted.decode("utf-8"))
-        except Exception as exc:
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.exception("Encrypted credentials read failed")
-            print(f"⚠️ 加密凭据读取失败: {exc}")
+            print(f"[!] 加密凭据读取失败: {exc}")
             return None
 
     def _write_encrypted_credentials(self, username: str, password: str) -> None:
@@ -130,6 +152,10 @@ class ConfigManager:
             os.chmod(self.credentials_path, 0o600)
         except OSError:
             pass
+
+    # ------------------------------------------------------------------
+    # Keyring helpers
+    # ------------------------------------------------------------------
 
     def _get_alt_keyring(self):
         try:
@@ -150,18 +176,21 @@ class ConfigManager:
     def _keyring_get(self, key: str) -> Optional[str]:
         try:
             return keyring.get_password(self.service_name, key)
-        except Exception as exc:
-            # 密钥链不可用时不降级为明文存储
-            print(f"❌ 密钥链读取失败: {exc}")
+        except keyring.errors.KeyringError as exc:
+            print(f"[ERROR] 密钥链读取失败: {exc}")
             print("提示：请确保系统密钥链服务已启动")
             _LOGGER.exception("Keyring get failed")
+            return None
+        except Exception as exc:
+            print(f"[ERROR] 密钥链读取失败（未知错误）: {exc}")
+            _LOGGER.exception("Keyring get failed (unexpected)")
             return None
 
     def _keyring_set(self, key: str, value: str) -> None:
         try:
             keyring.set_password(self.service_name, key, value)
-        except Exception as exc:
-            print(f"❌ 密钥链写入失败: {exc}")
+        except keyring.errors.KeyringError as exc:
+            print(f"[ERROR] 密钥链写入失败: {exc}")
             print("提示：请确保系统密钥链服务已启动")
             _LOGGER.exception("Keyring set failed")
             raise RuntimeError("keyring_write_failed") from exc
@@ -169,8 +198,14 @@ class ConfigManager:
     def _keyring_delete(self, key: str) -> None:
         try:
             keyring.delete_password(self.service_name, key)
+        except keyring.errors.KeyringError:
+            _LOGGER.warning("Keyring delete failed for key=%s (may not exist)", key)
         except Exception:
-            pass
+            _LOGGER.warning("Keyring delete failed for key=%s", key, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Alt keyring
+    # ------------------------------------------------------------------
 
     def _alt_keyring_get(self, key: str) -> Optional[str]:
         alt = self._get_alt_keyring()
@@ -180,7 +215,7 @@ class ConfigManager:
             return alt.get_password(self.service_name, key)
         except Exception as exc:
             _LOGGER.exception("Alt keyring get failed")
-            print(f"⚠️ keyrings.alt 读取失败: {exc}")
+            print(f"[!] keyrings.alt 读取失败: {exc}")
             return None
 
     def _alt_keyring_set(self, key: str, value: str) -> None:
@@ -193,13 +228,17 @@ class ConfigManager:
             _LOGGER.exception("Alt keyring set failed")
             raise RuntimeError("alt_keyring_write_failed") from exc
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def load_config(self) -> dict:
         if not self.config_path.exists():
             return self._default_config()
         try:
             data = json.loads(self.config_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            print("⚠️ 配置文件损坏，已使用默认配置")
+            print(ErrorCode.CONFIG_CORRUPTED.format())
             _LOGGER.exception("Config load failed")
             return self._default_config()
         base = self._default_config()
@@ -219,7 +258,6 @@ class ConfigManager:
         self._safe_chmod()
 
     def get_username(self) -> Optional[str]:
-        # 优先从环境变量读取（最安全，完全不落盘）
         env_user = os.getenv("SRUN_USERNAME") or os.getenv("SRUN_USER")
         if env_user:
             return env_user
@@ -229,7 +267,9 @@ class ConfigManager:
         data = self._read_encrypted_credentials()
         if data:
             return data.get("username")
-        print("⚠️ 未找到账号信息，请配置环境变量 SRUN_USERNAME")
+        if not self._warned_missing_username:
+            print("[!] 未找到账号信息，请配置环境变量 SRUN_USERNAME")
+            self._warned_missing_username = True
         return None
 
     def get_password(self) -> Optional[str]:
@@ -242,8 +282,29 @@ class ConfigManager:
         data = self._read_encrypted_credentials()
         if data:
             return data.get("password")
-        print("⚠️ 未找到密码信息，请配置环境变量 SRUN_PASSWORD")
+        if not self._warned_missing_password:
+            print("[!] 未找到密码信息，请配置环境变量 SRUN_PASSWORD")
+            self._warned_missing_password = True
         return None
+
+    def get_login_credentials(self) -> Optional[LoginCredentials]:
+        """Single call to retrieve all fields needed for login."""
+        data = self.load_config()
+        username = self.get_username() or data.get("username", "")
+        password = self.get_password() or ""
+        gateway = data.get("gateway", "")
+        ac_id = data.get("ac_id", "1")
+        default_ip = data.get("default_ip") or None
+
+        if not username or not password or not gateway:
+            return None
+        return LoginCredentials(
+            username=username,
+            password=password,
+            gateway=gateway,
+            ac_id=ac_id,
+            default_ip=default_ip,
+        )
 
     def set_credentials(self, username: str, password: str) -> None:
         try:
@@ -263,7 +324,7 @@ class ConfigManager:
             return
         except Exception as exc:
             _LOGGER.exception("Encrypted credentials write failed")
-            print(f"❌ 加密凭据写入失败: {exc}")
+            print(f"[ERROR] 加密凭据写入失败: {exc}")
             print("请配置环境变量 SRUN_USERNAME / SRUN_PASSWORD")
             raise RuntimeError("credential_write_failed") from exc
 
@@ -284,7 +345,7 @@ class ConfigManager:
         try:
             self.save_config(data)
         except ValueError as exc:
-            print(f"⚠️ 无法保存自启配置: {exc}")
+            print(f"[!] 无法保存自启配置: {exc}")
 
     def is_auto_start_enabled(self) -> bool:
         return bool(self.load_config().get("auto_start"))
@@ -303,4 +364,4 @@ class ConfigManager:
             try:
                 self.config_path.unlink()
             except OSError:
-                print("⚠️ 无法删除配置文件")
+                print("[!] 无法删除配置文件")

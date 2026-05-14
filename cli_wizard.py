@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 from config_manager import ConfigManager
+from errors import ErrorCode
+from shared import DEFAULT_GATEWAY, DEFAULT_TIMED_CONFIG
 from srun_login import SRUNLogin
 from timed_mode import TimedLoginManager
 
@@ -23,7 +25,11 @@ GITHUB_URL = "https://github.com/lxiaodong681-lab/Campus-Net-Autologin"
 def _yes_no(prompt: str, default: bool = False) -> bool:
     suffix = " [Y/n]" if default else " [y/N]"
     while True:
-        answer = input(prompt + suffix).strip().lower()
+        try:
+            answer = input(prompt + suffix).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
         if not answer:
             return default
         if answer in ("y", "yes"):
@@ -35,9 +41,17 @@ def _yes_no(prompt: str, default: bool = False) -> bool:
 
 def _input_with_default(prompt: str, default: str = "") -> str:
     if default:
-        value = input(f"{prompt} [{default}]: ").strip()
+        try:
+            value = input(f"{prompt} [{default}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
         return value or default
-    return input(f"{prompt}: ").strip().strip()
+    try:
+        return input(f"{prompt}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
 
 
 def _validate_time_range(value: str) -> bool:
@@ -47,8 +61,11 @@ def _validate_time_range(value: str) -> bool:
         return False
     parts = value.split("-")
     for part in parts:
-        hour, minute = part.split(":")
-        if int(hour) > 23 or int(minute) > 59:
+        try:
+            hour, minute = part.split(":")
+            if int(hour) > 23 or int(minute) > 59:
+                return False
+        except ValueError:
             return False
     return True
 
@@ -92,7 +109,7 @@ def _clear_config(config_manager: ConfigManager) -> None:
 
 def _collect_new_config() -> dict:
     _print_step(1, 5, "配置学校网关")
-    gateway = _input_with_default("你的学校网关是", "172.17.1.2")
+    gateway = _input_with_default("你的学校网关是", DEFAULT_GATEWAY)
 
     _print_step(2, 5, "配置 AC_ID")
     ac_id = _input_with_default("你的学校 AC_ID 是", "1")
@@ -118,13 +135,10 @@ def _collect_new_config() -> dict:
             print("  ❌ 格式错误！请使用 HH:MM-HH:MM（24小时制）")
         start_time, end_time = time_range.split("-")
         timed_config = {
+            **DEFAULT_TIMED_CONFIG,
             "enabled": True,
             "start_time": start_time,
             "end_time": end_time,
-            "check_interval_connected": 600,
-            "check_interval_disconnected": 120,
-            "check_interval_retry": 180,
-            "max_retries_per_session": 5,
         }
 
     return {
@@ -136,12 +150,13 @@ def _collect_new_config() -> dict:
     }
 
 
-def run_interactive_setup() -> None:
-    print(BANNER)
-    print("欢迎使用校园网自动登录工具！\n")
-    print("提示：以下信息需要从学校信息中心获取，可参考 GitHub 文档：")
-    print(f"  {GITHUB_URL}\n")
+# ------------------------------------------------------------------
+# Orchestration helpers (split from the monolithic run_interactive_setup)
+# ------------------------------------------------------------------
 
+
+def _detect_or_collect_config() -> dict:
+    """Detect existing config or walk the user through the wizard; returns config dict."""
     config_manager = ConfigManager()
 
     if _has_existing_config():
@@ -150,7 +165,7 @@ def run_interactive_setup() -> None:
 
         if answer:
             _clear_config(config_manager)
-            config_data = _collect_new_config()
+            return _collect_new_config()
         else:
             config = config_manager.load_config()
             username = config_manager.get_username() or config.get("username", "")
@@ -158,19 +173,21 @@ def run_interactive_setup() -> None:
             if not password:
                 print("❌ 密码未找到（密钥链可能为空），请重新输入配置")
                 _clear_config(config_manager)
-                config_data = _collect_new_config()
-            else:
-                config_data = {
-                    "username": username,
-                    "password": password,
-                    "gateway": config.get("gateway", ""),
-                    "ac_id": config.get("ac_id", "1"),
-                    "timed_mode": config.get("timed_mode", {}),
-                }
+                return _collect_new_config()
+            return {
+                "username": username,
+                "password": password,
+                "gateway": config.get("gateway", ""),
+                "ac_id": config.get("ac_id", "1"),
+                "timed_mode": config.get("timed_mode", {}),
+            }
     else:
-        config_data = _collect_new_config()
+        return _collect_new_config()
 
-    print("\n正在保存配置...")
+
+def _save_and_test_login(config_data: dict) -> bool:
+    """Save config + credentials, then attempt login. Returns True on success."""
+    config_manager = ConfigManager()
     data = {
         "username": config_data["username"],
         "gateway": config_data["gateway"],
@@ -195,10 +212,19 @@ def run_interactive_setup() -> None:
     success = login.login()
 
     if not success:
-        print("❌ 登录失败，请检查账号密码是否正确，或网关地址是否匹配")
-        sys.exit(1)
+        err = login.get_last_error()
+        if err:
+            print(f"❌ {err.full_message()}")
+        else:
+            print("❌ 登录失败，请检查账号密码是否正确，或网关地址是否匹配")
+        return False
 
     print("🎉 登录成功！")
+    return True
+
+
+def _enter_mode_loop(config_data: dict) -> None:
+    """Print post-login info and optionally enter timed-mode loop."""
     print("\n启动信息：")
     use_timed = config_data.get("timed_mode", {}).get("enabled", False)
     print(f"  模式: {'定时模式（持续监控）' if use_timed else '常规模式（单次登录）'}")
@@ -211,6 +237,7 @@ def run_interactive_setup() -> None:
 
     if use_timed:
         print("\n进入定时模式主循环，按 Ctrl+C 可停止...\n")
+        config_manager = ConfigManager()
         manager = TimedLoginManager(config_manager)
 
         def _sig_handler(sig, frame):
@@ -223,5 +250,21 @@ def run_interactive_setup() -> None:
         manager.run_loop()
     else:
         print("已退出。开机后重新运行即可自动登录。")
-        sys.exit(0)
 
+
+# ------------------------------------------------------------------
+# Public entry point
+# ------------------------------------------------------------------
+
+
+def run_interactive_setup() -> None:
+    print(BANNER)
+    print("欢迎使用校园网自动登录工具！\n")
+    print("提示：以下信息需要从学校信息中心获取，可参考 GitHub 文档：")
+    print(f"  {GITHUB_URL}\n")
+
+    config_data = _detect_or_collect_config()
+    success = _save_and_test_login(config_data)
+    if not success:
+        sys.exit(1)
+    _enter_mode_loop(config_data)
