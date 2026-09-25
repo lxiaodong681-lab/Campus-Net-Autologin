@@ -1,0 +1,38 @@
+[
+  {
+    "account": "test-user@cmcc",
+    "password": "test-password",
+    "ip": "192.0.2.10",
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "info": "{SRBX1}0zUhWJV3DK+jYAyOpEZycVX0u1JGNpNRRQw925dNRJXMyr41qDZvam0S5sIkAUqfd6zq04T5rrUgc34onINoPFCJrftrp5in2DBI7gaKI5cPSzIVn/WY+vOMftOujJISsWZ/bdXzZHuttIp5SkCNjv==",
+    "md5": "1640d493b1d386c8e55033f4c87da91f",
+    "chksum": "f0ab7e71480476136367e9c218728bfbf1b77b84"
+  },
+  {
+    "account": "test-user@cmcc",
+    "password": "a&+?=# %\"\\",
+    "ip": "192.0.2.10",
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "info": "{SRBX1}cQYCVtM7zQ47mBPACg7Cv8UearFUQdwkaxYcpFMQT9YjuH0mCBG6J+CPmuRpu5iA+96zLhkhzQGcuJfYJqY3ImKec936OfMw0HnbalE0KmJ9ORtGfxNxe1gNrhBo+6t36MiKG6hkRMyfGeriwW61S+==",
+    "md5": "9deb3b9380b9cf3e5fa8abba0fa91b82",
+    "chksum": "f88f7bda786a9858dbc9f0c02a00c2b13201c1c6"
+  },
+  {
+    "account": "test-user@cmcc",
+    "password": "中文密码123",
+    "ip": "192.0.2.10",
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "info": "{SRBX1}wKY0m6TIKd58IZZb2kgWfnyj5BVD+wracTOrAabPnrkPL7+gAgaZOQbWDRHQWFII1f+bLwbNfNdf+tCvL5ksHSLQ+s4eKsEsdrJHOBZijqEn/vS5r7yzsbNECnR8BFhuixRgUbPnzL4=",
+    "md5": "79e9bcddaab669058e76580a07d0db69",
+    "chksum": "5f0e43c3f7cdb7b652240efda037c310b2fdc6fe"
+  },
+  {
+    "account": "test-user@cmcc",
+    "password": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "ip": "192.0.2.10",
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "info": "{SRBX1}70mQN0yHjWUmeG/tIDYAYm2kRpFC+7/WcrvTFiW4obYAe83tagt2IgSRAe58HFmcZDJ5xA9wCzBAjT9M2GZsw8aflm4aEtCpjXZbhecQeQNgE/732aDdooZUJadbJxgqGIX4KkyusekMolDEBJjeKdYOuCTPvr7PzNmcdg5izSkBmJqQMHIHKVT6Nqr4HuQP4kG2jwfzlqFfCC+Ldnn8pIY/9NZf9dnJmhXpCOvmiJ2ld7wmG9M07I0oWUsXDL90T5x3Ph5DVBUA4+yPhfReL0/LJM20DP8BNcoJr5EvQ0R/uqmP1KZLT6eJAoZFoLnIqy65GRwcin0whHwAHS+CFh9Cdj5AWVXFfUZdxJpTQ3mmIyiRM+Kl2+==",
+    "md5": "8b21c7a87efad85aa4860688d18e4a00",
+    "chksum": "88725be8c9af28f3e6f6fc7bbaf973236a8d96dd"
+  }
+]

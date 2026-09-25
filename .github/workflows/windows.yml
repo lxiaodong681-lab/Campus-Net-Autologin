@@ -1,0 +1,41 @@
+name: Windows build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run offline protocol and Windows credential tests
+        shell: pwsh
+        run: ./test.ps1
+      - name: Publish self-contained Windows application
+        shell: pwsh
+        run: ./build.ps1
+      - name: Verify single-file runtime without credentials or network
+        shell: pwsh
+        run: |
+          $process = Start-Process ./artifacts/CampusAutoLogin.exe -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Startup timed out' }
+          if ($process.ExitCode -ne 0) { throw 'Startup failed' }
+      - name: Upload installable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CampusAutoLogin-win-x64
+          path: |
+            artifacts/**
+            !artifacts/*.pdb
+            install.ps1
+            README.md
+            LICENSE
+          if-no-files-found: error
