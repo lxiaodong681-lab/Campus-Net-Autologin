@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CampusAutoLogin</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>2.0.0-rc.1</Version>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <PathMap>$(MSBuildProjectDirectory)=/_/src</PathMap>
+  </PropertyGroup>
+</Project>
