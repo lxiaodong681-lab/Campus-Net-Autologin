@@ -16,13 +16,13 @@ Windows 托盘程序，面向**江西师范大学中国移动校园网**。进�
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装脚本将程序复制到当前用户目录，创建桌面“江西师大校园网”快捷方式，注册登录 Windows 后自动运行，并打开设置窗口。无需管理员权限，也无需另外安装 .NET 运行时。
+安装脚本将程序复制到当前用户目录，创建桌面“江西师大校园网”快捷方式，注册登录 Windows 后自动运行，并通过任务计划程序启动后台实例。双击桌面快捷方式或托盘图标进入设置。无需管理员权限，也无需另外安装 .NET 运行时。
 
 1. 输入自己的校园网账号和密码，点击“保存并启用”。账号可以不带 `@cmcc`。
 2. 保持“登录 Windows 后自动运行”勾选。关闭窗口后程序继续在托盘运行。
 3. 双击托盘图标打开设置；右键可立即检查、查看日志或退出。已保存密码时，密码输入框留空可保留原密码。
 
-程序使用 Windows 已连接的校园网，不新建 Wi-Fi 配置。无线用户应先连接校园 Wi-Fi，并启用 Windows 的自动连接。
+程序只在活动有线或无线网卡的 IPv4 地址和网关属于当前支持的江西师大 10.128.0.0/15 接入网时访问认证服务器；请求绑定校园网网卡，门户还需匹配江西师大与移动标识。外部网络下待机，不发送认证请求。网络切换会触发重新检查；学校更换地址范围时需要更新识别规则。程序使用 Windows 已连接的校园网，不新建 Wi-Fi 配置。无线用户应先连接校园 Wi-Fi，并启用 Windows 的自动连接。
 
 ## 工作方式
 
@@ -36,7 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 ## 本地数据与卸载
 
-程序与数据位于 `%LOCALAPPDATA%\JxnuCampusAutoLogin`：
+程序位于 `%USERPROFILE%\JxnuCampusAutoLogin`，配置与日志位于该目录下的 `data` 文件夹，避免打包应用的 AppData 虚拟化：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -46,13 +46,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 DPAPI 按当前 Windows 用户保护密码；同一用户权限下的程序仍可能解密，不应分享配置文件。网络侧沿用学校现有 HTTP 门户及挑战认证协议。
 
-自启动项是当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 中的 `JxnuCampusAutoLogin`。
+自启动使用 Windows 任务计划程序中的 `JxnuCampusAutoLogin-<用户 SID>` 任务：当前用户登录后延迟 15 秒，普通权限，不保存 Windows 密码，电池供电也运行，无运行时限，异常退出后每分钟重试最多 3 次。设置中的自启动勾选控制该任务；保存时清理旧注册表启动项。
 
 卸载时先在设置中取消自启动并保存，再从托盘退出，删除安装目录与桌面快捷方式。删除安装目录也会删除保存的凭据和日志。
 
 ### 从旧版迁移
 
-先退出旧 Python 版本并取消其自启动，然后安装新版、重新输入凭据。新版不读取或迁移原 `%APPDATA%\srun_login` 配置。旧实现仍可从 Git 历史获取；本 PR 不修改已有发行版。
+先退出旧 Python 版本并取消其自启动，然后安装新版、重新输入凭据。新版不读取或迁移原 Python `%APPDATA%\srun_login` 配置。rc.1 的 DPAPI 配置可由安装脚本从当前可见的旧 AppData 目录迁移，已有新配置不会覆盖。旧实现仍可从 Git 历史获取；本 PR 不修改已有发行版。
 
 ## 从源码构建
 

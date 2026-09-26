@@ -4,6 +4,8 @@ using CampusAutoLogin;
 
 var count = 0;
 void Assert(bool test, string description) { if (!test) throw new Exception(description); count++; }
+foreach (var ip in new[] { "10.128.1.10", "10.129.254.1" }) Assert(CampusNetwork.IsCampusAddress(IPAddress.Parse(ip)), "Campus address detection");
+foreach (var ip in new[] { "192.168.1.5", "172.17.1.2", "10.0.0.5", "10.130.1.1", "100.64.1.1", "127.0.0.1", "::1" }) Assert(!CampusNetwork.IsCampusAddress(IPAddress.Parse(ip)), "Foreign network must not authenticate");
 foreach (var vector in JsonDocument.Parse(File.ReadAllText("tests/vectors.json")).RootElement.EnumerateArray())
 {
     string V(string key) => vector.GetProperty(key).GetString()!;

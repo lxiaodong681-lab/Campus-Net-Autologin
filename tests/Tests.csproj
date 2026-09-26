@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
-  <ItemGroup><Compile Include="../src/SrunProtocol.cs" Link="SrunProtocol.cs" /><Compile Include="../src/RetryPolicy.cs" Link="RetryPolicy.cs" /><Compile Include="../src/Settings.cs" Link="Settings.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../src/SrunProtocol.cs" Link="SrunProtocol.cs" /><Compile Include="../src/RetryPolicy.cs" Link="RetryPolicy.cs" /><Compile Include="../src/Settings.cs" Link="Settings.cs" /><Compile Include="../src/AutoStart.cs" Link="AutoStart.cs" /><Compile Include="../src/CampusNetwork.cs" Link="CampusNetwork.cs" /></ItemGroup>
 </Project>

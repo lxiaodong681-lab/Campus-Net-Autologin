@@ -88,7 +88,7 @@ internal sealed class SrunClient : IDisposable
     private readonly HttpClient http;
     internal SrunClient(HttpMessageHandler? handler = null)
     {
-        http = new HttpClient(handler ?? new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false })
+        http = new HttpClient(handler ?? CampusNetwork.CreateHandler())
         { BaseAddress = new Uri("http://172.17.1.2"), Timeout = TimeSpan.FromSeconds(12) };
     }
 
