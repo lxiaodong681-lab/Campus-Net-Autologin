@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using System.Net.NetworkInformation;
 
 namespace CampusAutoLogin;
 
@@ -8,6 +9,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Contains("--register-startup")) { AutoStart.Enabled = true; return; }
+        if (args.Contains("--disable-startup")) { AutoStart.Enabled = false; return; }
         // Verify the packaged runtime and WinForms without reading credentials or using the network.
         if (args.Contains("--smoke-test"))
         {
@@ -19,6 +22,9 @@ internal static class Program
         using var mutex = new Mutex(true, @"Local\JxnuCampusAutoLogin", out var first);
         if (!first) { if (!args.Contains("--background")) MessageBox.Show("程序已在运行，请双击右下角托盘中的校园网图标打开设置。", "校园网自动登录"); return; }
         ApplicationConfiguration.Initialize();
+        Application.ThreadException += (_, e) => { Storage.Log("界面异常：" + e.Exception.GetType().Name); Environment.Exit(1); };
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => Storage.Log("程序异常退出，等待启动任务恢复。");
+        Storage.Log("程序已启动：" + (args.Contains("--background") ? "后台模式" : "设置窗口"));
         Application.Run(new MainForm(args.Contains("--background")));
     }
 }
@@ -41,6 +47,8 @@ internal sealed class MainForm : Form
     private bool busy, exiting;
     private readonly bool background;
     private string lastMessage = "";
+    private int networkChanged;
+    private void OnNetworkChanged(object? sender, EventArgs e) => Interlocked.Exchange(ref networkChanged, 1);
 
     internal MainForm(bool background)
     {
@@ -86,10 +94,15 @@ internal sealed class MainForm : Form
         catch { settings = null; SetStatus("无法读取原配置，请重新填写账号密码。"); }
         save.Click += (_, _) => SaveSettings();
         retry.Click += (_, _) => { policy.ConfigurationChanged(); next = DateTime.MinValue; };
-        timer.Tick += async (_, _) => { if (!busy && DateTime.UtcNow >= next) await Check(); };
+        NetworkChange.NetworkAddressChanged += OnNetworkChanged;
+        timer.Tick += async (_, _) => {
+            if (busy) return;
+            if (Interlocked.Exchange(ref networkChanged, 0) == 1) { policy.Connected(); next = DateTime.MinValue; }
+            if (DateTime.UtcNow >= next) await Check();
+        };
         timer.Start();
         FormClosing += (_, e) => { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
-        FormClosed += (_, _) => { stop.Cancel(); timer.Dispose(); tray.Dispose(); client.Dispose(); };
+        FormClosed += (_, _) => { NetworkChange.NetworkAddressChanged -= OnNetworkChanged; stop.Cancel(); timer.Dispose(); tray.Dispose(); client.Dispose(); Storage.Log("程序已退出。"); };
     }
     protected override void OnShown(EventArgs e)
     {
@@ -128,6 +141,12 @@ internal sealed class MainForm : Form
         busy = true; save.Enabled = false; retry.Enabled = false;
         try
         {
+            if (CampusNetwork.CurrentAddress() == null)
+            {
+                SetStatus("未检测到已连接的江西师大校园网，待机中。");
+                next = DateTime.UtcNow.AddSeconds(30);
+                return;
+            }
             var online = await client.Status(stop.Token);
             var error = SrunProtocol.Field(online, "error");
             if (error == "ok" && SrunProtocol.Field(online, "user_name").Length > 0)

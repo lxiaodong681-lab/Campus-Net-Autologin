@@ -10,7 +10,7 @@ internal sealed record Settings(string Account, string Secret);
 
 internal static class Storage
 {
-    internal static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JxnuCampusAutoLogin");
+    internal static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "JxnuCampusAutoLogin", "data");
     internal static string SettingsPath => Path.Combine(DirectoryPath, "settings.json");
     internal static Settings? Load() => File.Exists(SettingsPath) ? JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) : null;
     internal static void Save(string account, string password)
@@ -22,13 +22,8 @@ internal static class Storage
     }
     internal static bool AutoStart
     {
-        get { using var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"); return k?.GetValue("JxnuCampusAutoLogin") != null; }
-        set
-        {
-            using var k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-            if (value) k.SetValue("JxnuCampusAutoLogin", $"\"{Environment.ProcessPath}\" --background");
-            else k.DeleteValue("JxnuCampusAutoLogin", false);
-        }
+        get => CampusAutoLogin.AutoStart.Enabled;
+        set => CampusAutoLogin.AutoStart.Enabled = value;
     }
     [StructLayout(LayoutKind.Sequential)] private struct Blob { public int Length; public IntPtr Data; }
     [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern bool CryptProtectData(ref Blob input, string? description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
